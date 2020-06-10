@@ -1,3 +1,4 @@
+// 这是一行注释 test.js
 const fs = require('fs-extra')
 const path = require('path')
 const execa = require('execa')
