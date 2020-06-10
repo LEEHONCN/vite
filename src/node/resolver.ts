@@ -14,6 +14,7 @@ import {
   moduleFileToIdMap
 } from './server/serverPluginModuleResolve'
 import { resolveOptimizedCacheDir } from './optimizer'
+import { hmrClientPublicPath } from './server/serverPluginHmr'
 import chalk from 'chalk'
 
 const debug = require('debug')('vite:resolve')
@@ -204,6 +205,9 @@ export function createResolver(
      * Given a fuzzy public path, resolve missing extensions and /index.xxx
      */
     normalizePublicPath(publicPath) {
+      if (publicPath === hmrClientPublicPath) {
+        return publicPath
+      }
       // preserve query
       const queryMatch = publicPath.match(/\?.*$/)
       const query = queryMatch ? queryMatch[0] : ''
@@ -311,7 +315,7 @@ export function resolveBareModuleRequest(
 
   let isEntry = false
   const basedir = path.dirname(resolver.requestToFile(importer))
-  const pkgInfo = resolveNodeModule(basedir, id)
+  const pkgInfo = resolveNodeModule(basedir, id, resolver)
   if (pkgInfo) {
     if (!pkgInfo.entry) {
       console.error(
@@ -333,6 +337,11 @@ export function resolveBareModuleRequest(
     if (deepMatch) {
       const depId = deepMatch[1] || deepMatch[2]
       if (resolveOptimizedModule(root, depId)) {
+        if (resolver.alias(depId) === id) {
+          // this is a deep import but aliased from a bare module id.
+          // redirect it the optimized copy.
+          return resolveBareModuleRequest(root, depId, importer, resolver)
+        }
         console.error(
           chalk.yellow(
             `\n[vite] Avoid deep import "${id}" (imported by ${importer})\n` +
@@ -377,8 +386,8 @@ export function resolveOptimizedModule(
 }
 
 interface NodeModuleInfo {
-  entry: string | null
-  entryFilePath: string | null
+  entry: string | undefined
+  entryFilePath: string | undefined
   pkg: any
 }
 const nodeModulesInfoMap = new Map<string, NodeModuleInfo>()
@@ -386,7 +395,8 @@ const nodeModulesFileMap = new Map()
 
 export function resolveNodeModule(
   root: string,
-  id: string
+  id: string,
+  resolver: InternalResolver
 ): NodeModuleInfo | undefined {
   const cacheKey = `${root}#${id}`
   const cached = nodeModulesInfoMap.get(cacheKey)
@@ -409,7 +419,7 @@ export function resolveNodeModule(
     } catch (e) {
       return
     }
-    let entryPoint: string | null = null
+    let entryPoint: string | undefined
 
     // TODO properly support conditinal exports
     // https://nodejs.org/api/esm.html#esm_conditional_exports
@@ -438,8 +448,15 @@ export function resolveNodeModule(
     // e.g. foo/dist/foo.js
     // this is the path raw imports will be rewritten to, and is what will
     // be passed to resolveNodeModuleFile().
-    let entryFilePath: string | null = null
-    if (entryPoint) {
+    let entryFilePath: string | undefined
+
+    // respect user manual alias
+    const aliased = resolver.alias(id)
+    if (aliased && aliased !== id) {
+      entryFilePath = resolveNodeModuleFile(root, aliased)
+    }
+
+    if (!entryFilePath && entryPoint) {
       // #284 some packages specify entry without extension...
       entryFilePath = path.join(path.dirname(pkgPath), entryPoint!)
       const postfix = resolveFilePathPostfix(entryFilePath)
